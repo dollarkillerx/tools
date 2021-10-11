@@ -3,8 +3,11 @@ package tfidf
 import (
 	"encoding/json"
 	"io/ioutil"
+	"log"
 	"math"
 	"sync"
+
+	"github.com/dgraph-io/badger"
 )
 
 type TFIDF struct {
@@ -17,13 +20,13 @@ type TFIDF struct {
 }
 
 type WordTFIDF struct {
-	Index int     `json:"index"`
-	Value float64 `json:"value"`
+	Index int     `json:"Index"`
+	Value float64 `json:"Value"`
 }
 
 type wordMap struct {
 	sync.Mutex
-	m map[string]*word
+	m *badger.DB // word
 }
 
 func (wm *wordMap) setWord(w word) {
@@ -32,7 +35,7 @@ func (wm *wordMap) setWord(w word) {
 	}
 	defer wm.Unlock()
 	wm.Lock()
-	wm.m[w.value] = &w
+	wm.m[w.Value] = &w
 }
 
 func (wm *wordMap) getWord(s string) *word {
@@ -44,15 +47,15 @@ func (wm *wordMap) getWord(s string) *word {
 	return wm.m[s]
 }
 
-func newWordMap() *wordMap {
-	return &wordMap{
-		m: make(map[string]*word),
-	}
-}
+//func newWordMap() *wordMap {
+//	return &wordMap{
+//		M: make(map[string]*word),
+//	}
+//}
 
 type docMap struct {
 	sync.Mutex
-	m map[string]*Doc
+	m *badger.DB //DOC
 }
 
 func (dm *docMap) setDoc(d *Doc) {
@@ -73,44 +76,44 @@ func (dm *docMap) getDoc(id string) *Doc {
 	return dm.m[id]
 }
 
-func newDocMap() *docMap {
-	return &docMap{
-		m: make(map[string]*Doc),
-	}
-}
+//func newDocMap() *docMap {
+//	return &docMap{
+//		M: make(map[string]*Doc),
+//	}
+//}
 
 type word struct {
-	value  string
-	index  int
-	docSet *docSet
+	Value  string
+	Index  int
+	DocSet *docSet
 }
 
 func (w *word) getIndex() int {
 	if w == nil {
 		return -1
 	}
-	return w.index
+	return w.Index
 }
 
 func (w *word) addDoc(docID string) {
 	if w == nil {
 		return
 	}
-	w.docSet.append(docID)
+	w.DocSet.append(docID)
 }
 
 func (w *word) delDoc(docID string) {
 	if w == nil {
 		return
 	}
-	w.docSet.del(docID)
+	w.DocSet.del(docID)
 }
 
 func (w *word) docCount() int {
 	if w == nil {
 		return 0
 	}
-	return len(w.docSet.m)
+	return len(w.DocSet.M)
 }
 
 type persistentData struct {
@@ -187,12 +190,12 @@ func (s set) members() []string {
 
 type docSet struct {
 	sync.Mutex
-	m set
+	M set
 }
 
 func newSet() *docSet {
 	return &docSet{
-		m: make(set),
+		M: make(set),
 	}
 }
 
@@ -202,7 +205,7 @@ func (s *docSet) append(str string) *docSet {
 	}
 	defer s.Unlock()
 	s.Lock()
-	s.m.set(str)
+	s.M.set(str)
 	return s
 }
 
@@ -212,7 +215,7 @@ func (s *docSet) del(str string) {
 	}
 	defer s.Unlock()
 	s.Lock()
-	s.m.del(str)
+	s.M.del(str)
 }
 
 type Doc struct {
@@ -242,9 +245,18 @@ func (d *Doc) wordsDiff(newWords []string) (incr, decr []string) {
 }
 
 func NewTFIDF() *TFIDF {
+	wm, err := badger.Open(badger.DefaultOptions("./wm"))
+	if err != nil {
+		log.Fatalln(err)
+	}
+	dm, err := badger.Open(badger.DefaultOptions("./dm"))
+	if err != nil {
+		log.Fatalln(err)
+	}
+
 	return &TFIDF{
-		wm: newWordMap(),
-		dm: newDocMap(),
+		wm: &wordMap{m: wm},
+		dm: &docMap{m: dm},
 	}
 }
 
@@ -297,9 +309,9 @@ func (t *TFIDF) LoadFrom(pdFilename, fdFilename string) error {
 func (t *TFIDF) initDerivedData() {
 	for i := range t.pd.Words {
 		t.wm.setWord(word{
-			docSet: newSet(),
-			index:  i,
-			value:  t.pd.Words[i],
+			DocSet: newSet(),
+			Index:  i,
+			Value:  t.pd.Words[i],
 		})
 	}
 	for i := range t.pd.Docs {
@@ -323,10 +335,10 @@ func (t *TFIDF) appendWord(s, docID string) {
 		return
 	}
 	w = new(word)
-	w.docSet = newSet()
-	w.docSet.append(s)
-	w.value = s
-	w.index = t.pd.appendWord(s)
+	w.DocSet = newSet()
+	w.DocSet.append(s)
+	w.Value = s
+	w.Index = t.pd.appendWord(s)
 	t.wm.setWord(*w)
 }
 
@@ -488,12 +500,12 @@ func (t *TFIDF) reIndexWords(doc Doc) {
 		w := t.wm.getWord(doc.Words[i])
 		if w == nil {
 			t.wm.setWord(word{
-				value:  doc.Words[i],
-				index:  t.pd.appendWord(doc.Words[i]),
-				docSet: newSet().append(doc.ID),
+				Value:  doc.Words[i],
+				Index:  t.pd.appendWord(doc.Words[i]),
+				DocSet: newSet().append(doc.ID),
 			})
 			continue
 		}
-		w.docSet.append(doc.ID)
+		w.DocSet.append(doc.ID)
 	}
 }
